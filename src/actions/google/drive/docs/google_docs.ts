@@ -33,7 +33,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
         const resp = new Hub.ActionResponse()
 
         if (!request.params.state_json) {
-            winston.info("No state json found", {webhookId: request.webhookId})
+            winston.info("No state json found", { webhookId: request.webhookId })
             resp.success = false
             resp.message = "No state found with oauth credentials."
             resp.state = new Hub.ActionState()
@@ -45,11 +45,11 @@ export class GoogleDocsAction extends GoogleDriveAction {
 
         if (stateJson.tokens && stateJson.redirect) {
             await this.validateUserInDomainAllowlist(request.params.domain_allowlist,
-                                                   stateJson.redirect,
-                                                   stateJson.tokens,
-                                                   request.webhookId)
+                stateJson.redirect,
+                stateJson.tokens,
+                request.webhookId)
                 .catch((error) => {
-                    winston.info(error + " - invalidating token", {webhookId: request.webhookId})
+                    winston.info(error + " - invalidating token", { webhookId: request.webhookId })
                     resp.success = false
                     resp.state = new Hub.ActionState()
                     resp.message = "User Domain validation failed"
@@ -70,7 +70,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
                 resp.success = false
                 resp.message = error.message
                 resp.webhookId = request.webhookId
-                winston.error(`${error.message}`, {error, webhookId: request.webhookId})
+                winston.error(`${error.message}`, { error, webhookId: request.webhookId })
                 return resp
             }
 
@@ -87,7 +87,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
                 )
 
                 if (e.code && e.errors && e.errors[0] && e.errors[0].message) {
-                    error = {...error, http_code: e.code, message: `${errorType.description} ${LOG_PREFIX} ${e.errors[0].message}`}
+                    error = { ...error, http_code: e.code, message: `${errorType.description} ${LOG_PREFIX} ${e.errors[0].message}` }
                     resp.message = e.errors[0].message
                 } else {
                     resp.message = e.toString()
@@ -96,10 +96,10 @@ export class GoogleDocsAction extends GoogleDriveAction {
                 resp.success = false
                 resp.webhookId = request.webhookId
                 resp.error = error
-                winston.error(`${error.message}`, {error, webhookId: request.webhookId})
+                winston.error(`${error.message}`, { error, webhookId: request.webhookId })
             }
         } else {
-            winston.info("Request did not have oauth tokens present", {webhookId: request.webhookId})
+            winston.info("Request did not have oauth tokens present", { webhookId: request.webhookId })
             resp.success = false
             resp.message = "Request did not have necessary oauth tokens saved. Fast failing"
             resp.state = new Hub.ActionState()
@@ -141,11 +141,12 @@ export class GoogleDocsAction extends GoogleDriveAction {
     protected async docsClientFromRequest(redirect: string, tokens: Credentials) {
         const client = this.oauth2Client(redirect)
         client.setCredentials(tokens)
-        return google.docs({version: "v1", auth: client})
+        return google.docs({ version: "v1", auth: client })
     }
 
     private async createDocWithTable(filename: string, request: Hub.ActionRequest, drive: Drive, docs: Docs) {
         let folder: string | undefined
+        // let tab_index = 1
         if (request.formParams.folderid) {
             if (request.formParams.folderid.includes("my-drive")) {
                 folder = ROOT
@@ -205,21 +206,24 @@ export class GoogleDocsAction extends GoogleDriveAction {
                     }
 
                     const headers = rows[0]
+                    // console.log(headers.length)
+                    // console.log(headers.join(" -- "))
 
                     // Create table with headers
-                    const requests: docs_v1.Schema$Request[] = [
+                    const init_requests: docs_v1.Schema$Request[] = [
                         // Set landscape orientation
                         {
                             updateDocumentStyle: {
                                 documentStyle: {
                                     pageSize: {
+                                        // PT	A point, 1/72 of an inch.
                                         width: {
-                                            magnitude: 11,
-                                            unit: "IN"
+                                            magnitude: 11 * 72,
+                                            unit: "PT"
                                         },
                                         height: {
-                                            magnitude: 8.5,
-                                            unit: "IN"
+                                            magnitude: 8.5 * 72,
+                                            unit: "PT"
                                         }
                                     }
                                 },
@@ -237,79 +241,115 @@ export class GoogleDocsAction extends GoogleDriveAction {
                             }
                         }
                     ]
-
-                    // Style the header row
-                    requests.push({
-                        updateTableCellStyle: {
-                            tableCellStyle: {
-                                backgroundColor: {
-                                    color: {
-                                        rgbColor: {
-                                            red: 0.95,
-                                            green: 0.95,
-                                            blue: 0.95
-                                        }
-                                    }
-                                }
-                            },
-                            fields: "backgroundColor",
-                            tableRange: {
-                                tableCellLocation: {
-                                    rowIndex: 0,
-                                    columnIndex: 0
-                                },
-                                rowSpan: 1,
-                                columnSpan: headers.length
-                            }
-                        }
-                    })
-
-                    // Make headers bold
-                    for (let i = 0; i < headers.length; i++) {
-                        requests.push({
-                            updateTextStyle: {
-                                textStyle: {
-                                    bold: true
-                                },
-                                range: {
-                                    startIndex: this.getTableCellLocation(0, i, headers.length),
-                                    endIndex: this.getTableCellLocation(0, i, headers.length) + headers[i].length
-                                },
-                                fields: "bold"
-                            }
-                        })
-                    }
-
                     // Insert the data
-                    let currentIndex = 1
-                    const batchedRequests: docs_v1.Schema$Request[][] = [[...requests]]
+                    const batchedRequests: docs_v1.Schema$Request[][] = [[...init_requests]]
                     let currentBatch = 0
+                    // batchedRequests[currentBatch].push({
+                    //     insertText: {
+                    //         text: "Hello",
+                    //         location: {
+                    //             index: 5
+                    //         }
+                    //     }
+                    // })
+                    let index = 5 + (rows.length - 1) * (headers.length * 2 + 1) + (headers.length - 1) * 2
+                    for (let row = rows.length - 1; row >= 0; row--) {
+                        for (let col = headers.length - 1; col >= 0; col--) {
+                            const cellText = rows[row][col] || " "
 
-                    for (let row = 0; row < rows.length; row++) {
-                        for (let col = 0; col < rows[row].length; col++) {
-                            const cellText = rows[row][col]
                             const insertRequest = {
                                 insertText: {
                                     text: cellText,
                                     location: {
-                                        index: this.getTableCellLocation(row, col, headers.length)
+                                        index
                                     }
                                 }
                             }
-
                             if (batchedRequests[currentBatch].length >= MAX_REQUEST_BATCH) {
                                 currentBatch++
                                 batchedRequests[currentBatch] = []
                             }
                             batchedRequests[currentBatch].push(insertRequest)
-                            currentIndex += cellText.length
+                            if (row === 0) {
+                                batchedRequests[currentBatch].push({
+                                    updateTextStyle: {
+                                        textStyle: {
+                                            bold: true
+                                        },
+                                        range: {
+                                            startIndex: index,
+                                            endIndex: index + cellText.length
+                                        },
+                                        fields: "bold"
+                                    }
+                                })
+                            }
+                            index -= 2
                         }
+                        index -= 1
                     }
 
                     // Apply the changes in batches
                     for (const batch of batchedRequests) {
                         await this.retriableDocumentUpdate(documentId, docs, batch, 0, request.webhookId!)
                     }
+                    const after_requests: docs_v1.Schema$Request[] = [
+
+                        {
+                            // pin rows
+                            // @ts-ignore
+                            pinTableHeaderRows: {
+                                tableStartLocation: {
+                                    index: 2
+                                },
+                                pinnedHeaderRowsCount: 1
+                            }
+                        },
+                        {
+                            updateTableCellStyle: {
+                                tableCellStyle: {
+                                    backgroundColor: {
+                                        color: {
+                                            rgbColor: {
+                                                red: 0.95,
+                                                green: 0.95,
+                                                blue: 0.95
+                                            }
+                                        }
+                                    }
+                                },
+                                fields: "backgroundColor",
+                                tableRange: {
+                                    columnSpan: headers.length,
+                                    rowSpan: 1,
+                                    tableCellLocation: {
+                                        columnIndex: 0,
+                                        rowIndex: 0,
+                                        tableStartLocation: {
+                                            index: 2
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            updateTableColumnProperties: {
+                                tableStartLocation: {
+                                    index: 2
+                                },
+                                columnIndices: [0],
+                                tableColumnProperties: {
+                                    widthType: "FIXED_WIDTH",
+                                    width: {
+                                        magnitude: 54,
+                                        unit: "PT"
+                                    }
+                                },
+                                fields: "widthType,width"
+                            }
+                        }
+                    ]
+                    await this.retriableDocumentUpdate(documentId, docs, after_requests, 0, request.webhookId!)
 
                     resolve()
                 } catch (e) {
@@ -336,9 +376,9 @@ export class GoogleDocsAction extends GoogleDriveAction {
             }
         }).catch(async (e: any) => {
             this.sanitizeGaxiosError(e)
-            winston.debug(`Document update error: ${e}`, {webhookId})
+            winston.debug(`Document update error: ${e}`, { webhookId })
             if (RETRIABLE_CODES.includes(e.code) && process.env.GOOGLE_DOCS_RETRY && attempt <= MAX_RETRY_COUNT) {
-                winston.warn("Queueing retry for document update", {webhookId})
+                winston.warn("Queueing retry for document update", { webhookId })
                 await this.delay((RETRY_BASE_DELAY ** (attempt)) * 1000)
                 // Try again and increment attempt
                 return this.retriableDocumentUpdate(documentId, docs, requests, attempt + 1, webhookId)
@@ -351,9 +391,9 @@ export class GoogleDocsAction extends GoogleDriveAction {
     private async retriableFileList(drive: Drive, options: any, attempt: number, webhookId: string): Promise<any> {
         return await drive.files.list(options).catch(async (e: any) => {
             this.sanitizeGaxiosError(e)
-            winston.debug(`File list error: ${e}`, {webhookId})
+            winston.debug(`File list error: ${e}`, { webhookId })
             if (RETRIABLE_CODES.includes(e.code) && process.env.GOOGLE_DOCS_RETRY && attempt <= MAX_RETRY_COUNT) {
-                winston.warn("Queueing retry for file list", {webhookId})
+                winston.warn("Queueing retry for file list", { webhookId })
                 await this.delay((RETRY_BASE_DELAY ** (attempt)) * 1000)
                 // Try again and increment attempt
                 return this.retriableFileList(drive, options, attempt + 1, webhookId)
@@ -363,17 +403,21 @@ export class GoogleDocsAction extends GoogleDriveAction {
         })
     }
 
-    private getTableCellLocation(row: number, col: number, numColumns: number): number {
-        // Each cell has a newline character, so we need to account for that in the index calculation
-        // The +1 at the start is for the initial newline before the table
-        return 1 + (row * numColumns + col)
-    }
+    // private getTableCellLocation(row: number, col: number, numColumns: number): number {
+    //     // Each cell has a newline character, so we need to account for that in the index calculation
+    //     // The +1 at the start is for the initial newline before the table
+    //     return 1 + (row * numColumns + col)
+    // }
 
     sanitizeFilename(filename: string) {
         return filename.split("'").join("\'")
     }
 }
 
-if (process.env.GOOGLE_DOCS_CLIENT_ID && process.env.GOOGLE_DOCS_CLIENT_SECRET) {
+if (process.env.GOOGLE_DOC_CLIENT_ID && process.env.GOOGLE_DOC_CLIENT_SECRET) {
     Hub.addAction(new GoogleDocsAction())
-} 
+} else {
+    winston.warn(
+        `${LOG_PREFIX} Action not registered because required environment variables are missing.`,
+    )
+}
