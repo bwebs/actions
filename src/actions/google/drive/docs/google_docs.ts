@@ -19,6 +19,15 @@ const FOLDERID_REGEX = /\/folders\/(?<folderId>[^\/?]+)/
 const RETRIABLE_CODES = [429, 409, 500, 504, 503]
 const MAX_REQUEST_BATCH = process.env.GOOGLE_DOCS_WRITE_BATCH ? Number(process.env.GOOGLE_DOCS_WRITE_BATCH) : 100
 
+const PT = 72
+const FIRST_TABLE_COLUMN_WIDTH = PT * 0.5
+const DOCUMENT_WIDTH = PT * 8.5
+const DOCUMENT_HEIGHT = PT * 11
+const DOCUMENT_MARGIN = PT * 0.5
+const DOCUMENT_PORTRAIT: boolean = false
+
+
+
 export class GoogleDocsAction extends GoogleDriveAction {
     name = "google_docs"
     label = "Google Docs"
@@ -146,7 +155,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
 
     private async createDocWithTable(filename: string, request: Hub.ActionRequest, drive: Drive, docs: Docs) {
         let folder: string | undefined
-        // let tab_index = 1
+
         if (request.formParams.folderid) {
             if (request.formParams.folderid.includes("my-drive")) {
                 folder = ROOT
@@ -162,6 +171,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
             folder = request.formParams.folder
         }
 
+        const available_width = (DOCUMENT_PORTRAIT ? DOCUMENT_WIDTH : DOCUMENT_HEIGHT) - DOCUMENT_MARGIN * 2
         // First create an empty document
         const fileMetadata: drive_v3.Schema$File = {
             name: this.sanitizeFilename(filename),
@@ -206,8 +216,6 @@ export class GoogleDocsAction extends GoogleDriveAction {
                     }
 
                     const headers = rows[0]
-                    // console.log(headers.length)
-                    // console.log(headers.join(" -- "))
 
                     // Create table with headers
                     const init_requests: docs_v1.Schema$Request[] = [
@@ -216,18 +224,35 @@ export class GoogleDocsAction extends GoogleDriveAction {
                             updateDocumentStyle: {
                                 documentStyle: {
                                     pageSize: {
-                                        // PT	A point, 1/72 of an inch.
-                                        width: {
-                                            magnitude: 11 * 72,
+                                        height: {
+                                            magnitude: DOCUMENT_HEIGHT,
                                             unit: "PT"
                                         },
-                                        height: {
-                                            magnitude: 8.5 * 72,
+                                        width: {
+                                            magnitude: DOCUMENT_WIDTH,
                                             unit: "PT"
-                                        }
-                                    }
+                                        },
+                                    },
+                                    marginLeft: {
+                                        magnitude: DOCUMENT_MARGIN,
+                                        unit: "PT"
+                                    },
+                                    marginRight: {
+                                        magnitude: DOCUMENT_MARGIN,
+                                        unit: "PT"
+                                    },
+                                    marginTop: {
+                                        magnitude: DOCUMENT_MARGIN,
+                                        unit: "PT"
+                                    },
+                                    marginBottom: {
+                                        magnitude: DOCUMENT_MARGIN,
+                                        unit: "PT"
+                                    },
+                                    // @ts-ignore
+                                    // flipPageOrientation: !DOCUMENT_PORTRAIT,
                                 },
-                                fields: "pageSize"
+                                fields: "pageSize,marginLeft,marginRight,marginTop,marginBottom,flipPageOrientation",
                             }
                         },
                         // Create table
@@ -241,22 +266,23 @@ export class GoogleDocsAction extends GoogleDriveAction {
                             }
                         }
                     ]
+
+                    // First create the document structure and get the footer ID
+                    await this.retriableDocumentUpdate(documentId, docs, init_requests, 0, request.webhookId!)
+
                     // Insert the data
-                    const batchedRequests: docs_v1.Schema$Request[][] = [[...init_requests]]
+                    const batchedRequests: docs_v1.Schema$Request[][] = [[]]
                     let currentBatch = 0
-                    // batchedRequests[currentBatch].push({
-                    //     insertText: {
-                    //         text: "Hello",
-                    //         location: {
-                    //             index: 5
-                    //         }
-                    //     }
-                    // })
                     let index = 5 + (rows.length - 1) * (headers.length * 2 + 1) + (headers.length - 1) * 2
+                    let end_index = index + 0
+                    let header_range: { start: number, end: number } = {
+                        start: 5,
+                        end: 5
+                    }
                     for (let row = rows.length - 1; row >= 0; row--) {
                         for (let col = headers.length - 1; col >= 0; col--) {
                             const cellText = rows[row][col] || " "
-
+                            const cellLength = cellText.length
                             const insertRequest = {
                                 insertText: {
                                     text: cellText,
@@ -271,6 +297,10 @@ export class GoogleDocsAction extends GoogleDriveAction {
                             }
                             batchedRequests[currentBatch].push(insertRequest)
                             if (row === 0) {
+                                if (col === headers.length - 1) {
+                                    header_range.end = index + 0
+                                }
+                                header_range.end += cellLength
                                 batchedRequests[currentBatch].push({
                                     updateTextStyle: {
                                         textStyle: {
@@ -278,23 +308,22 @@ export class GoogleDocsAction extends GoogleDriveAction {
                                         },
                                         range: {
                                             startIndex: index,
-                                            endIndex: index + cellText.length
+                                            endIndex: index + cellLength
                                         },
                                         fields: "bold"
                                     }
                                 })
                             }
+                            end_index += cellLength
                             index -= 2
                         }
                         index -= 1
                     }
-
                     // Apply the changes in batches
                     for (const batch of batchedRequests) {
                         await this.retriableDocumentUpdate(documentId, docs, batch, 0, request.webhookId!)
                     }
                     const after_requests: docs_v1.Schema$Request[] = [
-
                         {
                             // pin rows
                             // @ts-ignore
@@ -332,6 +361,7 @@ export class GoogleDocsAction extends GoogleDriveAction {
                                 }
                             }
                         },
+                        // update first column width
                         {
                             updateTableColumnProperties: {
                                 tableStartLocation: {
@@ -341,11 +371,68 @@ export class GoogleDocsAction extends GoogleDriveAction {
                                 tableColumnProperties: {
                                     widthType: "FIXED_WIDTH",
                                     width: {
-                                        magnitude: 54,
+                                        magnitude: FIRST_TABLE_COLUMN_WIDTH,
                                         unit: "PT"
                                     }
                                 },
                                 fields: "widthType,width"
+                            }
+                        },
+                        // update other column widths
+                        {
+                            updateTableColumnProperties: {
+                                tableStartLocation: {
+                                    index: 2
+                                },
+                                columnIndices: Array.from({ length: headers.length }, (_, i) => i).filter(i => i !== 0),
+                                tableColumnProperties: {
+                                    widthType: "FIXED_WIDTH",
+                                    width: {
+                                        magnitude: (available_width - FIRST_TABLE_COLUMN_WIDTH) / (headers.length - 1),
+                                        unit: "PT"
+                                    }
+                                },
+                                fields: "widthType,width"
+                            }
+                        },
+                        {
+                            updateParagraphStyle: {
+                                paragraphStyle: {
+                                    namedStyleType: "NORMAL_TEXT",
+                                    lineSpacing: 50,
+                                },
+                                fields: "namedStyleType,lineSpacing",
+                                range: {
+                                    startIndex: 1,
+                                    endIndex: end_index
+                                }
+                            }
+                        },
+                        {
+                            updateTextStyle: {
+                                textStyle: {
+                                    fontSize: {
+                                        magnitude: 8,
+                                        unit: "PT"
+                                    }
+                                },
+                                fields: "fontSize",
+                                range: {
+                                    startIndex: header_range.end,
+                                    endIndex: end_index
+                                }
+                            }
+                        }, {
+                            updateSectionStyle: {
+                                sectionStyle: {
+                                    // @ts-ignore
+                                    flipPageOrientation: !DOCUMENT_PORTRAIT
+                                },
+                                fields: "flipPageOrientation",
+                                range: {
+                                    startIndex: 0,
+                                    endIndex: 1
+                                }
                             }
                         }
                     ]
